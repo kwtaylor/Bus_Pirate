@@ -457,11 +457,7 @@ void enter_sump_mode(void) {
      * Start the acquisition process (if the device is not properly set up
      * nothing will happen, so it's safe to call this anyway).
      */
-    if (sump_acquire_samples()) {
-
-      /* The acquisition process finished, end. */
-      return;
-    }
+    sump_acquire_samples();
   }
 }
 
@@ -502,7 +498,7 @@ bool sump_handle_command_byte(unsigned char input_byte) {
    * No need to clear it first, as it will be properly initialized upon
    * receiving a long (5 bytes) command.
    */
-  sump_command_t command_buffer = {.bytes = {0}, .count = 0, .left = 0};
+  static sump_command_t command_buffer = {.bytes = {0}, .count = 0, .left = 0};
 
   switch (command_processor_state) {
 
