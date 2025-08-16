@@ -279,7 +279,7 @@
 /**
  * How many probes the Bus Pirate can use.
  */
-#define BP_SUMP_PROBES_COUNT 5
+#define BP_SUMP_PROBES_COUNT NUM_OF_SUMP_CHANNELS
 
 /**
  * SUMP protocol version the Bus Pirate supports.
@@ -431,7 +431,11 @@ static bool sump_handle_command_byte(uint8_t input_byte);
 void enter_sump_mode(void) {
 
   /* Set probing channels to INPUT mode. */
-  IODIR |= AUX + MOSI + CLK + MISO + CS;
+#ifndef BUSPIRATEV4
+  IODIR |= (AUX + MOSI + CLK + MISO + CS);
+#else
+  IODIR |= (AUX0 + AUX1 + AUX2 + MOSI + CLK + MISO + CS + SUMP_SPARE6 + SUMP_SPARE7); // BPv4 PORTD SUMP inputs x9
+#endif
 
   /* Reset the analyzer state. */
   sump_reset();
@@ -449,7 +453,7 @@ void enter_sump_mode(void) {
       if (sump_handle_command_byte(user_serial_read_byte())) {
 
         /* A SUMP_RESET command was received, abort. */
-        return;
+        //return; //technically SUMP_RESET stays in SUMP mode
       }
     }
 
@@ -465,6 +469,12 @@ void sump_reset(void) {
   /* Switch LED off. */
   BP_LEDMODE = OFF;
 
+#ifdef BUSPIRATEV4 
+  CNPU1 &= 0b1001111111111111; //turn off pullups on used pins
+  CNPU4 &= 0b1111111111000001;
+  CNEN1 &= 0b1001111111111111; //turn off used pins change notice
+  CNEN4 &= 0b1111111111000001;
+#else   
   /* Switch pull-ups off for all pins. */
   CNPU1 = 0;
   CNPU2 = 0;
@@ -472,6 +482,7 @@ void sump_reset(void) {
   /* Disable change notification for all pins. */
   CNEN1 = 0;
   CNEN2 = 0;
+#endif
 
   /* Stop timer #4. */
   T4CON = 0;
@@ -595,31 +606,41 @@ bool sump_handle_command_byte(unsigned char input_byte) {
     /* Set triggers. */
     case SUMP_TRIG:
 
-      /* Set a trigger on the AUX pin. */
-      if (command_buffer.bytes[1] & 0b00010000) {
-        CNEN2 |= 0b0000000000000001;
-      }
+#ifdef BUSPIRATEV4                    
+      if (command_buffer.bytes[1] & 0b01000000)
+        CNEN4 |= 0b0000000000000010; //AUX2
 
-      /* Set a trigger on the ??? pin. */
-      if (command_buffer.bytes[1] & 0b00001000) {
-        CNEN2 |= 0b0000000000100000;
-      }
+#ifdef BPv4_SUMP_SOFT_WIRE // See hardwarev4.h                            
+      //AUX1 on PORTD:8 will be moved in firmware to B7 of SUMP byte
+      if (command_buffer.bytes[1] & 0b00100000)
+        CNEN4 |= 0b0000000000100000;
+#else // possible GREEN WIRE mode PORTD8 to PORTD7
+      if (command_buffer.bytes[1] & 0b00100000)
+        CNEN2 |= 0b0000000000000001; //AUX1 on PORTD:7
+#endif
 
-      /* Set a trigger on the ??? pin. */
-      if (command_buffer.bytes[1] & 0b00000100) {
-        CNEN2 |= 0b0000000001000000;
-      }
-
-      /* Set a trigger on the ??? pin. */
-      if (command_buffer.bytes[1] & 0b00000010) {
-        CNEN2 |= 0b0000000010000000;
-      }
-
-      /* Set a trigger on the ??? pin. */
-      if (command_buffer.bytes[1] & 0b00000001) {
-        CNEN2 |= 0b0000000100000000;
-      }
-
+      if (command_buffer.bytes[1] & 0b00010000)
+        CNEN1 |= 0b0100000000000000; // AUX0
+      if (command_buffer.bytes[1] & 0b00001000)
+        CNEN4 |= 0b0000000000000100; // MOSI
+      if (command_buffer.bytes[1] & 0b00000100)
+        CNEN4 |= 0b0000000000001000; // CLK
+      if (command_buffer.bytes[1] & 0b00000010)
+        CNEN4 |= 0b0000000000010000; // MISO
+      if (command_buffer.bytes[1] & 0b00000001)
+        CNEN1 |= 0b0010000000000000; // CS
+#else 
+      if (command_buffer.bytes[1] & 0b00010000)
+        CNEN2 |= 0b0000000000000001; // AUX
+      if (command_buffer.bytes[1] & 0b00001000)
+        CNEN2 |= 0b0000000000100000; // MOSI
+      if (command_buffer.bytes[1] & 0b00000100)
+        CNEN2 |= 0b0000000001000000; // CLK
+      if (command_buffer.bytes[1] & 0b00000010)
+        CNEN2 |= 0b0000000010000000; // MISO
+      if (command_buffer.bytes[1] & 0b00000001)
+        CNEN2 |= 0b0000000100000000; // CS
+#endif
       break;
 
     case SUMP_FLAGS:
@@ -693,8 +714,21 @@ bool sump_acquire_samples(void) {
 
     /* Capture samples into the terminal buffer. */
     for (offset = 0; offset < samples_to_acquire; offset++) {
+#ifndef BUSPIRATEV4
       bus_pirate_configuration.terminal_input[offset] = PORTB >> 6;
+#else
 
+#ifdef BPv4_SUMP_SOFT_WIRE // See hardwarev4.h
+      unsigned int sump_port = (PORTD & 0x13f);
+      if (sump_port & 0x100)
+          sump_port |= 0x80;
+      
+      bus_pirate_configuration.terminal_input[offset] = sump_port;
+#else
+      bus_pirate_configuration.terminal_input[offset] = (BYTE)(PORTD & 0xff);
+#endif
+
+#endif  
       /* Wait for timer4 interrupt to trigger. */
       while (IFS1bits.T5IF == OFF) {
       }
@@ -703,8 +737,13 @@ bool sump_acquire_samples(void) {
       IFS1bits.T5IF = OFF;
     }
 
+#ifdef BUSPIRATEV4
+    CNEN1 &= 0b1001111111111111; //turn off used pins change notice
+    CNEN4 &= 0b1111111111000001;
+#else
     /* Disable change notification for pins 16 to 31. */
     CNEN2 = 0;
+#endif
 
     /* Stop timer #4. */
     T4CON = OFF;
