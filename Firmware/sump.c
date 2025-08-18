@@ -400,6 +400,9 @@ static sump_analyzer_command_state_t command_processor_state = RX_COMMAND_IDLE;
  */
 static unsigned int samples_to_acquire;
 
+// whether trigger is armed
+static bool trigger_armed;
+
 /**
  * Acquires data from the probes and sends it out to the controlling software.
  *
@@ -473,7 +476,12 @@ void sump_reset(void) {
   CNPU1 &= 0b1001111111111111; //turn off pullups on used pins
   CNPU4 &= 0b1111111111000001;
   CNEN1 &= 0b1001111111111111; //turn off used pins change notice
+#ifdef BPv4_SUMP_SOFT_WIRE // See hardwarev4.h
   CNEN4 &= 0b1111111111000001;
+#else 
+  CNEN4 &= 0b1111111111100001;
+  CNEN2 &= 0b1111111111111110;
+#endif
 #else   
   /* Switch pull-ups off for all pins. */
   CNPU1 = 0;
@@ -499,6 +507,7 @@ void sump_reset(void) {
 
   /* Initialize the sampler. */
   sampler_state = SAMPLER_IDLE;
+  trigger_armed = false;
 }
 
 bool sump_handle_command_byte(unsigned char input_byte) {
@@ -605,30 +614,32 @@ bool sump_handle_command_byte(unsigned char input_byte) {
     switch (command_buffer.bytes[0]) {
     /* Set triggers. */
     case SUMP_TRIG:
+      trigger_armed = false;
 
 #ifdef BUSPIRATEV4                    
-      if (command_buffer.bytes[1] & 0b01000000)
-        CNEN4 |= 0b0000000000000010; //AUX2
-
-#ifdef BPv4_SUMP_SOFT_WIRE // See hardwarev4.h                            
+#ifdef BPv4_SUMP_SOFT_WIRE // See hardwarev4.h
       //AUX1 on PORTD:8 will be moved in firmware to B7 of SUMP byte
-      if (command_buffer.bytes[1] & 0b00100000)
+      if (command_buffer.bytes[1] & 0b10000000)
         CNEN4 |= 0b0000000000100000;
 #else // possible GREEN WIRE mode PORTD8 to PORTD7
-      if (command_buffer.bytes[1] & 0b00100000)
+      if (command_buffer.bytes[1] & 0b10000000)
         CNEN2 |= 0b0000000000000001; //AUX1 on PORTD:7
 #endif
-
-      if (command_buffer.bytes[1] & 0b00010000)
+      if (command_buffer.bytes[1] & 0b00100000)
         CNEN1 |= 0b0100000000000000; // AUX0
+      if (command_buffer.bytes[1] & 0b00010000)
+        CNEN1 |= 0b0010000000000000; // CS
       if (command_buffer.bytes[1] & 0b00001000)
-        CNEN4 |= 0b0000000000000100; // MOSI
+        CNEN4 |= 0b0000000000010000; // MISO
       if (command_buffer.bytes[1] & 0b00000100)
         CNEN4 |= 0b0000000000001000; // CLK
       if (command_buffer.bytes[1] & 0b00000010)
-        CNEN4 |= 0b0000000000010000; // MISO
+        CNEN4 |= 0b0000000000000100; // MOSI
       if (command_buffer.bytes[1] & 0b00000001)
-        CNEN1 |= 0b0010000000000000; // CS
+        CNEN4 |= 0b0000000000000010; //AUX2
+
+      if (command_buffer.bytes[1] & 0b10111111)
+        trigger_armed = true;
 #else 
       if (command_buffer.bytes[1] & 0b00010000)
         CNEN2 |= 0b0000000000000001; // AUX
@@ -640,6 +651,9 @@ bool sump_handle_command_byte(unsigned char input_byte) {
         CNEN2 |= 0b0000000010000000; // MISO
       if (command_buffer.bytes[1] & 0b00000001)
         CNEN2 |= 0b0000000100000000; // CS
+
+      if (command_buffer.bytes[1] & 0b00011111)
+        trigger_armed = true;
 #endif
       break;
 
@@ -700,7 +714,7 @@ bool sump_acquire_samples(void) {
     size_t offset;
 
     /* Skip if no interrupt and no trigger set. */
-    if (!IFS1bits.CNIF && CNEN2) {
+    if (!IFS1bits.CNIF && trigger_armed) {
       break;
     }
 
@@ -738,8 +752,14 @@ bool sump_acquire_samples(void) {
     }
 
 #ifdef BUSPIRATEV4
-    CNEN1 &= 0b1001111111111111; //turn off used pins change notice
+    //turn off used pins change notice
+    CNEN1 &= 0b1001111111111111;
+#ifdef BPv4_SUMP_SOFT_WIRE // See hardwarev4.h
     CNEN4 &= 0b1111111111000001;
+#else 
+    CNEN4 &= 0b1111111111100001;
+    CNEN2 &= 0b1111111111111110;
+#endif
 #else
     /* Disable change notification for pins 16 to 31. */
     CNEN2 = 0;
